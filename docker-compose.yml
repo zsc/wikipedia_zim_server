@@ -1,0 +1,8 @@
+services:
+  wiki:
+    image: ghcr.io/kiwix/kiwix-serve:latest
+    ports:
+      - "127.0.0.1:${PORT:-8080}:8080"
+    volumes:
+      - "${ZIM_PATH:-./wikipedia_en_simple_all_maxi_2025-11.zim}:/data/wiki.zim:ro"
+    command: ["wiki.zim"]

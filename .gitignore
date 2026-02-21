@@ -1,0 +1,5 @@
+.DS_Store
+.env
+*.zim
+__pycache__/
+benchmark_report.html

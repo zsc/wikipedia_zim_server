@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./serve [--port PORT] [--zim PATH] [--no-open] [PATH_TO_ZIM]
+
+Env:
+  PORT=8080
+  ADDRESS=127.0.0.1
+  ZIM=/path/to/file.zim
+  OPEN_BROWSER=1
+EOF
+}
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+port="${PORT:-8080}"
+address="${ADDRESS:-127.0.0.1}"
+open_browser="${OPEN_BROWSER:-1}"
+
+zim_paths=()
+
+if [[ -n "${ZIM:-}" ]]; then
+  zim_paths+=("$ZIM")
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --port)
+      port="$2"
+      shift 2
+      ;;
+    --zim)
+      zim_paths+=("$2")
+      shift 2
+      ;;
+    --no-open)
+      open_browser="0"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      zim_paths+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ ${#zim_paths[@]} -eq 0 ]]; then
+  shopt -s nullglob
+  for f in "$script_dir"/*.zim; do
+    zim_paths+=("$f")
+  done
+  shopt -u nullglob
+fi
+
+if [[ ${#zim_paths[@]} -eq 0 ]]; then
+  echo "No .zim found. Put a .zim file in: $script_dir"
+  echo "Or run: ./serve /path/to/file.zim"
+  exit 1
+fi
+
+resolve_realpath() {
+  local p="$1"
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$p"
+    return 0
+  fi
+  python3 - <<'PY' "$p"
+import os,sys
+print(os.path.realpath(sys.argv[1]))
+PY
+}
+
+browse_host="127.0.0.1"
+case "$address" in
+  0.0.0.0|all|ipv4|ipv6)
+    browse_host="127.0.0.1"
+    ;;
+  *)
+    browse_host="$address"
+    ;;
+esac
+url="http://${browse_host}:${port}/"
+
+if [[ "$open_browser" == "1" ]]; then
+  (
+    sleep 1
+    if command -v open >/dev/null 2>&1; then
+      open "$url" >/dev/null 2>&1 || true
+    elif command -v xdg-open >/dev/null 2>&1; then
+      xdg-open "$url" >/dev/null 2>&1 || true
+    fi
+  ) &
+fi
+
+echo "Serving on: $url"
+
+kiwix_serve_bin=""
+if command -v kiwix-serve >/dev/null 2>&1; then
+  kiwix_serve_bin="$(command -v kiwix-serve)"
+elif [[ -x "${HOME}/.local/bin/kiwix-serve" ]]; then
+  kiwix_serve_bin="${HOME}/.local/bin/kiwix-serve"
+fi
+
+if [[ -n "$kiwix_serve_bin" ]]; then
+  echo "Using local kiwix-serve: $kiwix_serve_bin"
+  help="$("$kiwix_serve_bin" --help 2>&1 || true)"
+  port_args=()
+  if echo "$help" | grep -q -- '--port'; then
+    port_args=(--port "$port")
+  elif echo "$help" | grep -q -- ' -p'; then
+    port_args=(-p "$port")
+  fi
+  address_args=()
+  if echo "$help" | grep -q -- '--address'; then
+    address_args=(--address "$address")
+  elif echo "$help" | grep -q -- ' -i'; then
+    address_args=(-i "$address")
+  fi
+  exec "$kiwix_serve_bin" "${address_args[@]}" "${port_args[@]}" "${zim_paths[@]}"
+fi
+
+if command -v docker >/dev/null 2>&1; then
+  echo "Using docker image: ghcr.io/kiwix/kiwix-serve"
+  publish=("${port}:8080")
+  if [[ "$address" == "127.0.0.1" ]]; then
+    publish=("127.0.0.1:${port}:8080")
+  fi
+  docker_args=(run --rm -p "${publish[0]}")
+  container_zims=()
+
+  for p in "${zim_paths[@]}"; do
+    real_p="$(resolve_realpath "$p")"
+    base="$(basename "$real_p")"
+
+    docker_args+=(-v "${real_p}:/data/${base}:ro")
+    container_zims+=("$base")
+  done
+
+  exec docker "${docker_args[@]}" ghcr.io/kiwix/kiwix-serve "${container_zims[@]}"
+fi
+
+cat <<EOF
+Neither 'kiwix-serve' nor 'docker' is available.
+
+Options:
+  1) Install kiwix-tools so 'kiwix-serve' is on PATH, then re-run:
+       ./serve
+  2) Install Docker and re-run:
+       ./serve
+EOF
+exit 1
